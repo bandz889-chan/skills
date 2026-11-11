@@ -1,0 +1,4 @@
+interface:
+  display_name: "windows-app-uia"
+  short_description: "브라우저가 아닌 Windows 앱을 UI Automation · Win32 창 메시지로 읽고 조작하는 헬퍼를 만들어 에이전트에 연결"
+  default_prompt: "$windows-app-uia 스킬로 이 윈도우 앱에서 자주 하는 일을 헬퍼로 만들어줘."
