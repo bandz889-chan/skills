@@ -17,7 +17,6 @@ The record is written to disk *before* dispatch, so a crash or lost response lea
 "may have happened" behind and the same ID is never dispatched twice.
 """
 
-import fcntl
 import hashlib
 import json
 import os
@@ -27,6 +26,22 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+if os.name == "nt":  # Windows: byte-range lock instead of flock, no O_NOFOLLOW, no directory fsync.
+    import msvcrt
+
+    def _try_lock(descriptor):
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        try:
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+        except OSError:
+            raise BlockingIOError from None
+else:
+    import fcntl
+
+    def _try_lock(descriptor):
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 ID_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
 FINAL = ("observed", "blocked")
 
@@ -43,11 +58,12 @@ def save_private(path, value):
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        if os.name != "nt":
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -60,10 +76,10 @@ class OperationJournal:
     @contextmanager
     def lock(self):
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        descriptor = os.open(self.root / ".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        descriptor = os.open(self.root / ".lock", os.O_CREAT | os.O_RDWR | O_NOFOLLOW, 0o600)
         try:
             try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                _try_lock(descriptor)
             except BlockingIOError:
                 raise ValueError("Another operation is in progress") from None
             yield
@@ -78,7 +94,7 @@ class OperationJournal:
     def load(self, path):
         if not path.exists():
             return None
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        descriptor = os.open(path, os.O_RDONLY | O_NOFOLLOW)
         with os.fdopen(descriptor) as stream:
             return json.load(stream)
 
